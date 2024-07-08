@@ -45,7 +45,6 @@ MISSING = [
     "Series.is_unique",
     "Series.item",
     "Series.len",
-    "Series.max",
     "Series.min",
     "Series.n_unique",
     "Series.null_count",
