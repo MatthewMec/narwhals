@@ -4,6 +4,7 @@
     handler: python
     options:
       members:
+        - abs
         - alias
         - all
         - any
@@ -13,6 +14,7 @@
         - drop_nulls
         - fill_null
         - filter
+        - head
         - is_between
         - is_duplicated
         - is_first_distinct
@@ -20,6 +22,7 @@
         - is_last_distinct
         - is_null
         - is_unique
+        - len
         - max
         - mean
         - min
@@ -27,11 +30,13 @@
         - n_unique
         - over
         - quantile
+        - round
         - sample
         - shift
         - sort
         - std
         - sum
+        - tail
         - unique
       show_source: false
       show_bases: false

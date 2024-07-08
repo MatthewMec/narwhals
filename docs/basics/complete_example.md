@@ -14,70 +14,68 @@ The `fit` method is a bit complicated, so let's start with `transform`.
 Suppose we've already calculated the mean and standard deviation of each column, and have
 stored them in attributes `self.means` and `self.std_devs`.
 
-## Transform method
-
-The general strategy will be:
-
-1. Initialise a Narwhals DataFrame or LazyFrame by passing your dataframe to `nw.from_native`.
-   
-    Note: if you need eager execution, make sure to pass `eager_only=True` to `nw.from_native`.
-
-2. Express your logic using the subset of the Polars API supported by Narwhals.
-3. If you need to return a dataframe to the user in its original library, call `nw.to_native`.
-
-```python
-import narwhals as nw
-
-class StandardScalar:
-    def transform(self, df):
-        df = nw.from_native(df)
-        df = df.with_columns(
-            (nw.col(col) - self._means[col]) / self._std_devs[col]
-            for col in df.columns
-        )
-        return nw.to_native(df)
-```
-
-Note that all the calculations here can stay lazy if the underlying library permits it.
-
 ## Fit method
 
-Unlike the `transform` method, `fit` cannot stay lazy, as we need to compute concrete values
-for the means and standard deviations.
+Unlike the `transform` method, which we'll write below, `fit` cannot stay lazy,
+as we need to compute concrete values for the means and standard deviations.
 
-To be able to get `Series` out of our `DataFrame`, we'll pass `eager_only=True` to `narwhals.from_native`.
+To be able to get `Series` out of our `DataFrame`, we'll pass `eager_only=True` to `nw.from_native`.
 This is because Polars doesn't have a concept of lazy `Series`, and so Narwhals
 doesn't either.
 
+We can specify that in the `@nw.narwhalify` decorator by setting `eager_only=True`, and
+the argument will be propagated to `nw.from_native`.
+
 ```python
 import narwhals as nw
+from typing import Any
 
-class StandardScalar:
-    def fit(self, df):
-        df = nw.from_native(df, eager_only=True)
+class StandardScaler:
+    @nw.narwhalify(eager_only=True)
+    def fit(self, df_any: nw.DataFrame[Any]) -> None:
         self._means = {col: df[col].mean() for col in df.columns}
         self._std_devs = {col: df[col].std() for col in df.columns}
 ```
+
+## Transform method
+
+We're going to take in a dataframe, and return a dataframe of the same type.
+Therefore, we use `@nw.narwhalify`:
+
+```python
+    @nw.narwhalify
+    def transform(self, df: FrameT) -> FrameT:
+        return df.with_columns(
+            (nw.col(col) - self._means[col]) / self._std_devs[col]
+            for col in df.columns
+        )
+```
+
+Note that all the calculations here can stay lazy if the underlying library permits it,
+so we don't pass in any extra keyword-arguments such as `eager_only`, we just use the
+default `eager_only=False`.
 
 ## Putting it all together
 
 Here is our dataframe-agnostic standard scaler:
 ```python exec="1" source="above" session="tute-ex1"
+from typing import Any
+
 import narwhals as nw
+from narwhals.typing import FrameT
 
 class StandardScaler:
-    def fit(self, df):
-        df = nw.from_native(df, eager_only=True)
+    @nw.narwhalify(eager_only=True)
+    def fit(self, df: nw.DataFrame[Any]) -> None:
         self._means = {col: df[col].mean() for col in df.columns}
         self._std_devs = {col: df[col].std() for col in df.columns}
 
-    def transform(self, df):
-        df = nw.from_native(df)
-        df = df.with_columns(
+    @nw.narwhalify
+    def transform(self, df: FrameT) -> FrameT:
+        return df.with_columns(
             (nw.col(col) - self._means[col]) / self._std_devs[col]
             for col in df.columns
         )
-        return nw.to_native(df)
 ```
 
 Next, let's try running it. Notice how, as `transform` doesn't use

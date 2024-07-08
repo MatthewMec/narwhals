@@ -10,11 +10,8 @@ from typing import Iterable
 from typing import Iterator
 
 from narwhals._pandas_like.utils import is_simple_aggregation
-from narwhals._pandas_like.utils import item
+from narwhals._pandas_like.utils import native_series_from_iterable
 from narwhals._pandas_like.utils import parse_into_exprs
-from narwhals._pandas_like.utils import series_from_iterable
-from narwhals.dependencies import get_pandas
-from narwhals.utils import parse_version
 from narwhals.utils import remove_prefix
 
 if TYPE_CHECKING:
@@ -31,7 +28,7 @@ class PandasGroupBy:
     def __init__(self, df: PandasDataFrame, keys: list[str]) -> None:
         self._df = df
         self._keys = list(keys)
-        self._grouped = self._df._dataframe.groupby(
+        self._grouped = self._df._native_dataframe.groupby(
             list(self._keys),
             sort=False,
             as_index=True,
@@ -45,6 +42,7 @@ class PandasGroupBy:
         exprs = parse_into_exprs(
             self._df._implementation,
             *aggs,
+            backend_version=self._df._backend_version,
             **named_aggs,
         )
         implementation: str = self._df._implementation
@@ -64,20 +62,34 @@ class PandasGroupBy:
             exprs,
             self._keys,
             output_names,
-            self._from_dataframe,
-            implementation,
+            self._from_native_dataframe,
+            dataframe_is_empty=self._df._native_dataframe.empty,
+            implementation=implementation,
+            backend_version=self._df._backend_version,
         )
 
-    def _from_dataframe(self, df: PandasDataFrame) -> PandasDataFrame:
+    def _from_native_dataframe(self, df: PandasDataFrame) -> PandasDataFrame:
         from narwhals._pandas_like.dataframe import PandasDataFrame
 
         return PandasDataFrame(
             df,
             implementation=self._df._implementation,
+            backend_version=self._df._backend_version,
         )
 
     def __iter__(self) -> Iterator[tuple[Any, PandasDataFrame]]:
-        return self._grouped.__iter__()  # type: ignore[no-any-return]
+        with warnings.catch_warnings():
+            # we already use `tupleify` above, so we're already opting in to
+            # the new behaviour
+            warnings.filterwarnings(
+                "ignore",
+                message="In a future version of pandas, a length 1 tuple will be returned",
+                category=FutureWarning,
+            )
+            iterator = self._grouped.__iter__()
+        yield from (
+            (key, self._from_native_dataframe(sub_df)) for (key, sub_df) in iterator
+        )
 
 
 def agg_pandas(  # noqa: PLR0913
@@ -86,7 +98,10 @@ def agg_pandas(  # noqa: PLR0913
     keys: list[str],
     output_names: list[str],
     from_dataframe: Callable[[Any], PandasDataFrame],
+    *,
     implementation: Any,
+    backend_version: tuple[int, ...],
+    dataframe_is_empty: bool,
 ) -> PandasDataFrame:
     """
     This should be the fastpath, but cuDF is too far behind to use it.
@@ -94,8 +109,6 @@ def agg_pandas(  # noqa: PLR0913
     - https://github.com/rapidsai/cudf/issues/15118
     - https://github.com/rapidsai/cudf/issues/15084
     """
-    pd = get_pandas()
-
     all_simple_aggs = True
     for expr in exprs:
         if not is_simple_aggregation(expr):
@@ -119,9 +132,12 @@ def agg_pandas(  # noqa: PLR0913
             assert expr._depth == 1
             assert expr._root_names is not None
             assert expr._output_names is not None
+            function_name = remove_prefix(expr._function_name, "col->")
+            function_name = POLARS_TO_PANDAS_AGGREGATIONS.get(
+                function_name, function_name
+            )
             for root_name, output_name in zip(expr._root_names, expr._output_names):
-                name = remove_prefix(expr._function_name, "col->")
-                simple_aggregations[output_name] = (root_name, name)
+                simple_aggregations[output_name] = (root_name, function_name)
 
         aggs = collections.defaultdict(list)
         name_mapping = {}
@@ -138,6 +154,20 @@ def agg_pandas(  # noqa: PLR0913
         result_simple = result_simple.rename(columns=name_mapping).reset_index()
         return from_dataframe(result_simple.loc[:, output_names])
 
+    if dataframe_is_empty:
+        # Don't even attempt this, it's way too inconsistent across pandas versions.
+        msg = (
+            "No results for group-by aggregation.\n\n"
+            "Hint: you were probably trying to apply a non-elementary aggregation with a "
+            "pandas-like API.\n"
+            "Please rewrite your query such that group-by aggregations "
+            "are elementary. For example, instead of:\n\n"
+            "    df.group_by('a').agg(nw.col('b').round(2).mean())\n\n"
+            "use:\n\n"
+            "    df.with_columns(nw.col('b').round(2)).group_by('a').agg(nw.col('b').mean())\n\n"
+        )
+        raise ValueError(msg)
+
     warnings.warn(
         "Found complex group-by expression, which can't be expressed efficiently with the "
         "pandas API. If you can, please rewrite your query such that group-by aggregations "
@@ -152,21 +182,20 @@ def agg_pandas(  # noqa: PLR0913
         for expr in exprs:
             results_keys = expr._call(from_dataframe(df))
             for result_keys in results_keys:
-                out_group.append(item(result_keys._series))
+                out_group.append(result_keys._native_series.iloc[0])
                 out_names.append(result_keys.name)
-        return series_from_iterable(
-            out_group, index=out_names, name="", implementation=implementation
+        return native_series_from_iterable(
+            out_group,
+            index=out_names,
+            name="",
+            implementation=implementation,
         )
 
-    if implementation == "pandas":
-        pd = get_pandas()
-
-        if parse_version(pd.__version__) < parse_version("2.2.0"):  # pragma: no cover
-            result_complex = grouped.apply(func)
-        else:
-            result_complex = grouped.apply(func, include_groups=False)
+    if implementation == "pandas" and backend_version >= (2, 2):
+        result_complex = grouped.apply(func, include_groups=False)
     else:  # pragma: no cover
         result_complex = grouped.apply(func)
 
     result = result_complex.reset_index()
+
     return from_dataframe(result.loc[:, output_names])

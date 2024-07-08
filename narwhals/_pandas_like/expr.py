@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from typing_extensions import Self
 
     from narwhals._pandas_like.dataframe import PandasDataFrame
+    from narwhals._pandas_like.namespace import PandasNamespace
 
 
 class PandasExpr:
@@ -25,6 +26,7 @@ class PandasExpr:
         root_names: list[str] | None,
         output_names: list[str] | None,
         implementation: str,
+        backend_version: tuple[int, ...],
     ) -> None:
         self._call = call
         self._depth = depth
@@ -33,6 +35,7 @@ class PandasExpr:
         self._depth = depth
         self._output_names = output_names
         self._implementation = implementation
+        self._backend_version = backend_version
 
     def __repr__(self) -> str:  # pragma: no cover
         return (
@@ -43,15 +46,24 @@ class PandasExpr:
             f"output_names={self._output_names}"
         )
 
+    def __narwhals_namespace__(self) -> PandasNamespace:
+        from narwhals._pandas_like.namespace import PandasNamespace
+
+        return PandasNamespace(self._implementation, self._backend_version)
+
     @classmethod
     def from_column_names(
-        cls: type[Self], *column_names: str, implementation: str
+        cls: type[Self],
+        *column_names: str,
+        implementation: str,
+        backend_version: tuple[int, ...],
     ) -> Self:
         def func(df: PandasDataFrame) -> list[PandasSeries]:
             return [
                 PandasSeries(
-                    df._dataframe.loc[:, column_name],
+                    df._native_dataframe.loc[:, column_name],
                     implementation=df._implementation,
+                    backend_version=df._backend_version,
                 )
                 for column_name in column_names
             ]
@@ -63,6 +75,7 @@ class PandasExpr:
             root_names=list(column_names),
             output_names=list(column_names),
             implementation=implementation,
+            backend_version=backend_version,
         )
 
     def cast(
@@ -200,7 +213,7 @@ class PandasExpr:
     def filter(self, *predicates: Any) -> Self:
         from narwhals._pandas_like.namespace import PandasNamespace
 
-        plx = PandasNamespace(self._implementation)
+        plx = PandasNamespace(self._implementation, self._backend_version)
         expr = plx.all_horizontal(*predicates)
         return reuse_series_implementation(self, "filter", other=expr)
 
@@ -209,6 +222,9 @@ class PandasExpr:
 
     def sort(self, *, descending: bool = False) -> Self:
         return reuse_series_implementation(self, "sort", descending=descending)
+
+    def abs(self) -> Self:
+        return reuse_series_implementation(self, "abs")
 
     def cum_sum(self) -> Self:
         return reuse_series_implementation(self, "cum_sum")
@@ -243,6 +259,7 @@ class PandasExpr:
             root_names=self._root_names,
             output_names=[name],
             implementation=self._implementation,
+            backend_version=self._backend_version,
         )
 
     def over(self, keys: list[str]) -> Self:
@@ -255,7 +272,7 @@ class PandasExpr:
                 )
                 raise ValueError(msg)
             tmp = df.group_by(keys).agg(self)
-            tmp = df.select(keys).join(tmp, how="left", left_on=keys, right_on=keys)
+            tmp = df.select(*keys).join(tmp, how="left", left_on=keys, right_on=keys)
             return [tmp[name] for name in self._output_names]
 
         return self.__class__(
@@ -265,6 +282,7 @@ class PandasExpr:
             root_names=self._root_names,
             output_names=self._output_names,
             implementation=self._implementation,
+            backend_version=self._backend_version,
         )
 
     def is_duplicated(self) -> Self:
@@ -288,6 +306,18 @@ class PandasExpr:
             self, "quantile", quantile, interpolation, returns_scalar=True
         )
 
+    def head(self, n: int) -> Self:
+        return reuse_series_implementation(self, "head", n)
+
+    def tail(self, n: int) -> Self:
+        return reuse_series_implementation(self, "tail", n)
+
+    def round(self: Self, decimals: int) -> Self:
+        return reuse_series_implementation(self, "round", decimals)
+
+    def len(self: Self) -> Self:
+        return reuse_series_implementation(self, "len", returns_scalar=True)
+
     @property
     def str(self) -> PandasExprStringNamespace:
         return PandasExprStringNamespace(self)
@@ -296,10 +326,34 @@ class PandasExpr:
     def dt(self) -> PandasExprDateTimeNamespace:
         return PandasExprDateTimeNamespace(self)
 
+    @property
+    def cat(self) -> PandasExprCatNamespace:
+        return PandasExprCatNamespace(self)
+
+
+class PandasExprCatNamespace:
+    def __init__(self, expr: PandasExpr) -> None:
+        self._expr = expr
+
+    def get_categories(self) -> PandasExpr:
+        return reuse_series_namespace_implementation(
+            self._expr,
+            "cat",
+            "get_categories",
+        )
+
 
 class PandasExprStringNamespace:
     def __init__(self, expr: PandasExpr) -> None:
         self._expr = expr
+
+    def starts_with(self, prefix: str) -> PandasExpr:
+        return reuse_series_namespace_implementation(
+            self._expr,
+            "str",
+            "starts_with",
+            prefix,
+        )
 
     def ends_with(self, suffix: str) -> PandasExpr:
         return reuse_series_namespace_implementation(
@@ -309,12 +363,18 @@ class PandasExprStringNamespace:
             suffix,
         )
 
-    def head(self, n: int = 5) -> PandasExpr:
+    def contains(self, pattern: str, *, literal: bool) -> PandasExpr:
         return reuse_series_namespace_implementation(
             self._expr,
             "str",
-            "head",
-            n,
+            "contains",
+            pattern,
+            literal=literal,
+        )
+
+    def slice(self, offset: int, length: int | None = None) -> PandasExpr:
+        return reuse_series_namespace_implementation(
+            self._expr, "str", "slice", offset, length
         )
 
     def to_datetime(self, format: str | None = None) -> PandasExpr:  # noqa: A002
@@ -379,4 +439,9 @@ class PandasExprDateTimeNamespace:
     def total_nanoseconds(self) -> PandasExpr:
         return reuse_series_namespace_implementation(
             self._expr, "dt", "total_nanoseconds"
+        )
+
+    def to_string(self, format: str) -> PandasExpr:  # noqa: A002
+        return reuse_series_namespace_implementation(
+            self._expr, "dt", "to_string", format
         )

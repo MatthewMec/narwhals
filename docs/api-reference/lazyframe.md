@@ -4,6 +4,7 @@
     handler: python
     options:
       members:
+        - clone
         - collect
         - columns
         - drop
@@ -18,6 +19,7 @@
         - schema
         - select
         - sort
+        - tail
         - unique
         - with_columns
         - with_row_index

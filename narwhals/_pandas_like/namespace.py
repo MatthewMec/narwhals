@@ -9,11 +9,10 @@ from typing import Iterable
 from narwhals import dtypes
 from narwhals._pandas_like.dataframe import PandasDataFrame
 from narwhals._pandas_like.expr import PandasExpr
-from narwhals._pandas_like.selectors import PandasSelector
+from narwhals._pandas_like.selectors import PandasSelectorNamespace
 from narwhals._pandas_like.series import PandasSeries
 from narwhals._pandas_like.utils import horizontal_concat
 from narwhals._pandas_like.utils import parse_into_exprs
-from narwhals._pandas_like.utils import series_from_iterable
 from narwhals._pandas_like.utils import vertical_concat
 from narwhals.utils import flatten
 
@@ -33,17 +32,25 @@ class PandasNamespace:
     Float64 = dtypes.Float64
     Float32 = dtypes.Float32
     Boolean = dtypes.Boolean
+    Object = dtypes.Object
+    Unknown = dtypes.Unknown
     Categorical = dtypes.Categorical
+    Enum = dtypes.Enum
     String = dtypes.String
     Datetime = dtypes.Datetime
+    Duration = dtypes.Duration
+    Date = dtypes.Date
 
     @property
-    def selectors(self) -> PandasSelector:
-        return PandasSelector(self._implementation)
+    def selectors(self) -> PandasSelectorNamespace:
+        return PandasSelectorNamespace(
+            implementation=self._implementation, backend_version=self._backend_version
+        )
 
     # --- not in spec ---
-    def __init__(self, implementation: str) -> None:
+    def __init__(self, implementation: str, backend_version: tuple[int, ...]) -> None:
         self._implementation = implementation
+        self._backend_version = backend_version
 
     def _create_expr_from_callable(  # noqa: PLR0913
         self,
@@ -61,19 +68,18 @@ class PandasNamespace:
             root_names=root_names,
             output_names=output_names,
             implementation=self._implementation,
+            backend_version=self._backend_version,
         )
 
     def _create_series_from_scalar(
         self, value: Any, series: PandasSeries
     ) -> PandasSeries:
-        return PandasSeries(
-            series_from_iterable(
-                [value],
-                name=series._series.name,
-                index=series._series.index[0:1],
-                implementation=self._implementation,
-            ),
+        return PandasSeries._from_iterable(
+            [value],
+            name=series._native_series.name,
+            index=series._native_series.index[0:1],
             implementation=self._implementation,
+            backend_version=self._backend_version,
         )
 
     def _create_expr_from_series(self, series: PandasSeries) -> PandasExpr:
@@ -84,20 +90,24 @@ class PandasNamespace:
             root_names=None,
             output_names=None,
             implementation=self._implementation,
+            backend_version=self._backend_version,
         )
 
     # --- selection ---
     def col(self, *column_names: str | Iterable[str]) -> PandasExpr:
         return PandasExpr.from_column_names(
-            *flatten(column_names), implementation=self._implementation
+            *flatten(column_names),
+            implementation=self._implementation,
+            backend_version=self._backend_version,
         )
 
     def all(self) -> PandasExpr:
         return PandasExpr(
             lambda df: [
                 PandasSeries(
-                    df._dataframe.loc[:, column_name],
+                    df._native_dataframe.loc[:, column_name],
                     implementation=self._implementation,
+                    backend_version=self._backend_version,
                 )
                 for column_name in df.columns
             ],
@@ -106,61 +116,100 @@ class PandasNamespace:
             root_names=None,
             output_names=None,
             implementation=self._implementation,
+            backend_version=self._backend_version,
+        )
+
+    def lit(self, value: Any, dtype: dtypes.DType | None) -> PandasExpr:
+        def _lit_pandas_series(df: PandasDataFrame) -> PandasSeries:
+            pandas_series = PandasSeries._from_iterable(
+                data=[value],
+                name="lit",
+                index=df._native_dataframe.index[0:1],
+                implementation=self._implementation,
+                backend_version=self._backend_version,
+            )
+            if dtype:
+                return pandas_series.cast(dtype)
+            return pandas_series
+
+        return PandasExpr(
+            lambda df: [_lit_pandas_series(df)],
+            depth=0,
+            function_name="lit",
+            root_names=None,
+            output_names=["lit"],
+            implementation=self._implementation,
+            backend_version=self._backend_version,
         )
 
     # --- reduction ---
     def sum(self, *column_names: str) -> PandasExpr:
         return PandasExpr.from_column_names(
-            *column_names, implementation=self._implementation
+            *column_names,
+            implementation=self._implementation,
+            backend_version=self._backend_version,
         ).sum()
 
     def mean(self, *column_names: str) -> PandasExpr:
         return PandasExpr.from_column_names(
-            *column_names, implementation=self._implementation
+            *column_names,
+            implementation=self._implementation,
+            backend_version=self._backend_version,
         ).mean()
 
     def max(self, *column_names: str) -> PandasExpr:
         return PandasExpr.from_column_names(
-            *column_names, implementation=self._implementation
+            *column_names,
+            implementation=self._implementation,
+            backend_version=self._backend_version,
         ).max()
 
     def min(self, *column_names: str) -> PandasExpr:
         return PandasExpr.from_column_names(
-            *column_names, implementation=self._implementation
+            *column_names,
+            implementation=self._implementation,
+            backend_version=self._backend_version,
         ).min()
 
     def len(self) -> PandasExpr:
         return PandasExpr(
             lambda df: [
-                PandasSeries(
-                    series_from_iterable(
-                        [len(df._dataframe)],
-                        name="len",
-                        index=[0],
-                        implementation=self._implementation,
-                    ),
+                PandasSeries._from_iterable(
+                    [len(df._native_dataframe)],
+                    name="len",
+                    index=[0],
                     implementation=self._implementation,
-                ),
+                    backend_version=self._backend_version,
+                )
             ],
             depth=0,
             function_name="len",
             root_names=None,
             output_names=["len"],
             implementation=self._implementation,
+            backend_version=self._backend_version,
         )
 
     # --- horizontal ---
     def sum_horizontal(
         self, *exprs: IntoPandasExpr | Iterable[IntoPandasExpr]
     ) -> PandasExpr:
-        return reduce(lambda x, y: x + y, parse_into_exprs(self._implementation, *exprs))
+        return reduce(
+            lambda x, y: x + y,
+            parse_into_exprs(
+                self._implementation, *exprs, backend_version=self._backend_version
+            ),
+        )
 
     def all_horizontal(
         self, *exprs: IntoPandasExpr | Iterable[IntoPandasExpr]
     ) -> PandasExpr:
         # Why is this showing up as uncovered? It defo is?
         return reduce(
-            lambda x, y: x & y, parse_into_exprs(self._implementation, *exprs)
+            lambda x, y: x & y,
+            parse_into_exprs(
+                self._implementation, *exprs, backend_version=self._backend_version
+            ),
         )  # pragma: no cover
 
     def concat(
@@ -169,15 +218,25 @@ class PandasNamespace:
         *,
         how: str = "vertical",
     ) -> PandasDataFrame:
-        dfs: list[Any] = [item._dataframe for item in items]
+        dfs: list[Any] = [item._native_dataframe for item in items]
         if how == "horizontal":
             return PandasDataFrame(
-                horizontal_concat(dfs, implementation=self._implementation),
+                horizontal_concat(
+                    dfs,
+                    implementation=self._implementation,
+                    backend_version=self._backend_version,
+                ),
                 implementation=self._implementation,
+                backend_version=self._backend_version,
             )
         if how == "vertical":
             return PandasDataFrame(
-                vertical_concat(dfs, implementation=self._implementation),
+                vertical_concat(
+                    dfs,
+                    implementation=self._implementation,
+                    backend_version=self._backend_version,
+                ),
                 implementation=self._implementation,
+                backend_version=self._backend_version,
             )
         raise NotImplementedError

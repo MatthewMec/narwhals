@@ -1,10 +1,6 @@
 from typing import Any
 
-import pandas as pd
-import polars as pl
-import pytest
-
-import narwhals as nw
+import narwhals.stable.v1 as nw
 from tests.utils import compare_dicts
 
 data = {
@@ -13,8 +9,7 @@ data = {
 }
 
 
-@pytest.mark.parametrize("constructor", [pd.DataFrame, pl.DataFrame])
-def test_over_single(constructor: Any) -> None:
+def test_n_unique(constructor: Any) -> None:
     df = nw.from_native(constructor(data), eager_only=True)
     result = df.select(nw.all().n_unique())
     expected = {

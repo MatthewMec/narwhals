@@ -8,7 +8,8 @@ import pandas as pd
 import polars as pl
 import pytest
 
-import narwhals as nw
+import narwhals.stable.v1 as nw
+from narwhals.utils import parse_version
 from tests.utils import compare_dicts
 
 
@@ -17,6 +18,9 @@ from tests.utils import compare_dicts
     ["pandas", "polars"],
 )
 @pytest.mark.filterwarnings("ignore:.*Passing a BlockManager.*:DeprecationWarning")
+@pytest.mark.skipif(
+    parse_version(pd.__version__) < parse_version("1.0.0"), reason="too old for pyarrow"
+)
 def test_q1(library: str) -> None:
     if library == "pandas":
         df_raw = pd.read_parquet("tests/data/lineitem.parquet")
@@ -24,7 +28,7 @@ def test_q1(library: str) -> None:
     else:
         df_raw = pl.scan_parquet("tests/data/lineitem.parquet")
     var_1 = datetime(1998, 9, 2)
-    df = nw.LazyFrame(df_raw)
+    df = nw.from_native(df_raw).lazy()
     query_result = (
         df.filter(nw.col("l_shipdate") <= var_1)
         .with_columns(
@@ -84,6 +88,9 @@ def test_q1(library: str) -> None:
     "ignore:.*Passing a BlockManager.*:DeprecationWarning",
     "ignore:.*Complex.*:UserWarning",
 )
+@pytest.mark.skipif(
+    parse_version(pd.__version__) < parse_version("1.0.0"), reason="too old for pyarrow"
+)
 def test_q1_w_generic_funcs(library: str) -> None:
     if library == "pandas":
         df_raw = pd.read_parquet("tests/data/lineitem.parquet")
@@ -91,7 +98,7 @@ def test_q1_w_generic_funcs(library: str) -> None:
     else:
         df_raw = pl.read_parquet("tests/data/lineitem.parquet")
     var_1 = datetime(1998, 9, 2)
-    df = nw.DataFrame(df_raw)
+    df = nw.from_native(df_raw, eager_only=True)
     query_result = (
         df.filter(nw.col("l_shipdate") <= var_1)
         .with_columns(
@@ -144,11 +151,14 @@ def test_q1_w_generic_funcs(library: str) -> None:
 
 @mock.patch.dict(os.environ, {"NARWHALS_FORCE_GENERIC": "1"})
 @pytest.mark.filterwarnings("ignore:.*Passing a BlockManager.*:DeprecationWarning")
+@pytest.mark.skipif(
+    parse_version(pd.__version__) < parse_version("1.0.0"), reason="too old for pyarrow"
+)
 def test_q1_w_pandas_agg_generic_path() -> None:
     df_raw = pd.read_parquet("tests/data/lineitem.parquet")
     df_raw["l_shipdate"] = pd.to_datetime(df_raw["l_shipdate"])
     var_1 = datetime(1998, 9, 2)
-    df = nw.LazyFrame(df_raw)
+    df = nw.from_native(df_raw).lazy()
     query_result = (
         df.filter(nw.col("l_shipdate") <= var_1)
         .with_columns(
